@@ -17,8 +17,8 @@ jobs:
             platform: macos-latest
             rust-target: aarch64-apple-darwin
             args: --target aarch64-apple-darwin
-          - platform: macos-latest
-            name: macOS Intel
+          - name: macOS Intel
+            platform: macos-15-intel
             rust-target: x86_64-apple-darwin
             args: --target x86_64-apple-darwin
           - name: Windows
@@ -50,7 +50,7 @@ jobs:
         run: npm ci
 
       - name: Build and publish Tauri app
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
