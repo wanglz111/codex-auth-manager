@@ -2,10 +2,14 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 #[cfg(target_os = "windows")]
 use std::process::Command;
 use std::sync::Mutex;
+#[cfg(target_os = "windows")]
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use notify::{EventKind, RecursiveMode, Watcher};
@@ -13,8 +17,12 @@ use reqwest::{Client, Proxy};
 use serde::{Deserialize, Serialize};
 
 static USAGE_BINDINGS_LOCK: Mutex<()> = Mutex::new(());
+#[cfg(target_os = "windows")]
+static DEFAULT_WSL_HOME_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 const MIN_VALID_EPOCH_MS: i64 = 946684800000; // 2000-01-01T00:00:00Z
 const MAX_VALID_EPOCH_MS: i64 = 4102444800000; // 2100-01-01T00:00:00Z
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// 获取应用数据目录
 fn get_app_data_dir() -> Result<PathBuf, String> {
@@ -44,30 +52,35 @@ fn get_effective_home_dir() -> Result<PathBuf, String> {
 
 #[cfg(target_os = "windows")]
 fn get_default_wsl_home_dir() -> Option<PathBuf> {
-    let output = Command::new("wsl.exe")
-        .args([
-            "sh",
-            "-lc",
-            r#"printf '%s\n%s' "${WSL_DISTRO_NAME:-}" "$HOME""#,
-        ])
-        .output()
-        .ok()?;
+    DEFAULT_WSL_HOME_DIR
+        .get_or_init(|| {
+            let output = Command::new("wsl.exe")
+                .creation_flags(CREATE_NO_WINDOW)
+                .args([
+                    "sh",
+                    "-lc",
+                    r#"printf '%s\n%s' "${WSL_DISTRO_NAME:-}" "$HOME""#,
+                ])
+                .output()
+                .ok()?;
 
-    if !output.status.success() {
-        return None;
-    }
+            if !output.status.success() {
+                return None;
+            }
 
-    let stdout = String::from_utf8(output.stdout).ok()?;
-    let mut lines = stdout.lines().map(str::trim).filter(|line| !line.is_empty());
-    let distro_name = lines.next()?;
-    let linux_home = lines.next()?;
+            let stdout = String::from_utf8(output.stdout).ok()?;
+            let mut lines = stdout.lines().map(str::trim).filter(|line| !line.is_empty());
+            let distro_name = lines.next()?;
+            let linux_home = lines.next()?;
 
-    if !linux_home.starts_with('/') {
-        return None;
-    }
+            if !linux_home.starts_with('/') {
+                return None;
+            }
 
-    let suffix = linux_home.trim_start_matches('/').replace('/', "\\");
-    Some(PathBuf::from(format!(r"\\wsl$\{}\{}", distro_name, suffix)))
+            let suffix = linux_home.trim_start_matches('/').replace('/', "\\");
+            Some(PathBuf::from(format!(r"\\wsl$\{}\{}", distro_name, suffix)))
+        })
+        .clone()
 }
 
 #[cfg(not(target_os = "windows"))]
