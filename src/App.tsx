@@ -6,6 +6,7 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import {
   exportAccountsBackup,
   importAccountsBackup,
+  importAvailableCodexAuths,
   isMissingIdentityError,
   type AddAccountOptions,
 } from './utils/storage';
@@ -104,16 +105,17 @@ function App() {
     setIsInitializing(true);
 
     const runAutoImport = async () => {
-      let authJson: string | null = null;
       try {
-        authJson = await invoke<string>('read_codex_auth');
-        await addAccount(authJson);
-        setShouldInitialRefresh(true);
-      } catch (error) {
-        if (authJson && isMissingIdentityError(error)) {
-          setIdentityConfirm({ isOpen: true, authJson, source: 'auto' });
+        const result = await importAvailableCodexAuths();
+        if (result.importedCount > 0) {
+          setShouldInitialRefresh(true);
+        }
+        if (result.skippedSources.length > 0) {
+          const skipped = result.skippedSources[0];
+          setIdentityConfirm({ isOpen: true, authJson: skipped.authJson, source: 'auto' });
           clearError();
         }
+      } catch (error) {
         // No local auth or invalid auth; fall back to empty state.
       } finally {
         try {
@@ -177,16 +179,16 @@ function App() {
 
   const handleSyncAccount = async () => {
     try {
-      const authJson = await invoke<string>('read_codex_auth');
-      try {
-        await addAccount(authJson);
-      } catch (error) {
-        if (isMissingIdentityError(error)) {
-          setIdentityConfirm({ isOpen: true, authJson, source: 'sync' });
-          clearError();
-          return;
-        }
-        throw error;
+      const result = await importAvailableCodexAuths();
+      if (result.skippedSources.length > 0) {
+        const skipped = result.skippedSources[0];
+        setIdentityConfirm({ isOpen: true, authJson: skipped.authJson, source: 'sync' });
+        clearError();
+        return;
+      }
+      if (result.importedCount === 0) {
+        setError('未找到可导入的当前 Codex 配置。');
+        return;
       }
       // 同步完成后立即更新激活状态并刷新用量
       await syncCurrentAccount();

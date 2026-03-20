@@ -48,6 +48,16 @@ type AccountsBackupFile = {
   accounts: AccountBackupEntry[];
 };
 
+type CodexAuthSource = {
+  path: string;
+  platform: string;
+  authJson: string;
+};
+
+type ImportSkippedSource = CodexAuthSource & {
+  reason: 'missing_identity';
+};
+
 function normalizePlanType(
   value: string | null | undefined
 ): AccountInfo['planType'] | null {
@@ -352,6 +362,40 @@ export async function importAccountsBackup(
   }
 
   return { importedCount: backup.accounts.length };
+}
+
+export async function importAvailableCodexAuths(
+  options: AddAccountOptions = {}
+): Promise<{
+  importedCount: number;
+  skippedCount: number;
+  sources: CodexAuthSource[];
+  skippedSources: ImportSkippedSource[];
+}> {
+  const sources = await invoke<CodexAuthSource[]>('read_all_codex_auths');
+  let importedCount = 0;
+  let skippedCount = 0;
+  const skippedSources: ImportSkippedSource[] = [];
+
+  for (const source of sources) {
+    try {
+      const authConfig = JSON.parse(source.authJson) as CodexAuthConfig;
+      await addAccount(authConfig, undefined, options);
+      importedCount += 1;
+    } catch (error) {
+      if (isMissingIdentityError(error)) {
+        skippedCount += 1;
+        skippedSources.push({
+          ...source,
+          reason: 'missing_identity',
+        });
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  return { importedCount, skippedCount, sources, skippedSources };
 }
 
 /**

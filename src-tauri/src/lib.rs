@@ -1,7 +1,10 @@
 use std::collections::HashMap;
+use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+#[cfg(target_os = "windows")]
+use std::process::Command;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -20,11 +23,112 @@ fn get_app_data_dir() -> Result<PathBuf, String> {
         .ok_or_else(|| "Cannot find app data directory".to_string())
 }
 
+fn get_primary_home_dir() -> Result<PathBuf, String> {
+    if let Some(home) = env::var_os("HOME") {
+        let path = PathBuf::from(home);
+        if path.is_absolute() {
+            return Ok(path);
+        }
+    }
+
+    dirs::home_dir().ok_or_else(|| "Cannot find home directory".to_string())
+}
+
+fn get_effective_home_dir() -> Result<PathBuf, String> {
+    if let Some(wsl_home) = get_default_wsl_home_dir() {
+        return Ok(wsl_home);
+    }
+
+    get_primary_home_dir()
+}
+
+#[cfg(target_os = "windows")]
+fn get_default_wsl_home_dir() -> Option<PathBuf> {
+    let output = Command::new("wsl.exe")
+        .args([
+            "sh",
+            "-lc",
+            r#"printf '%s\n%s' "${WSL_DISTRO_NAME:-}" "$HOME""#,
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let mut lines = stdout.lines().map(str::trim).filter(|line| !line.is_empty());
+    let distro_name = lines.next()?;
+    let linux_home = lines.next()?;
+
+    if !linux_home.starts_with('/') {
+        return None;
+    }
+
+    let suffix = linux_home.trim_start_matches('/').replace('/', "\\");
+    Some(PathBuf::from(format!(r"\\wsl$\{}\{}", distro_name, suffix)))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_default_wsl_home_dir() -> Option<PathBuf> {
+    None
+}
+
 /// 获取用户目录下的 .codex_manager 目录
 fn get_codex_manager_dir() -> Result<PathBuf, String> {
-    dirs::home_dir()
-        .map(|p| p.join(".codex_manager"))
-        .ok_or_else(|| "Cannot find home directory".to_string())
+    get_primary_home_dir().map(|p| p.join(".codex_manager"))
+}
+
+fn get_primary_codex_home_dir() -> Result<PathBuf, String> {
+    get_primary_home_dir().map(|p| p.join(".codex"))
+}
+
+fn get_effective_codex_home_dir() -> Result<PathBuf, String> {
+    get_effective_home_dir().map(|p| p.join(".codex"))
+}
+
+fn get_secondary_codex_auth_path() -> Option<PathBuf> {
+    let primary = get_primary_codex_home_dir().ok()?.join("auth.json");
+    let effective = get_codex_auth_path().ok()?;
+
+    if primary == effective {
+        return None;
+    }
+
+    Some(primary)
+}
+
+fn get_candidate_codex_auth_paths() -> Result<Vec<PathBuf>, String> {
+    let preferred = get_codex_auth_path()?;
+    let mut paths = vec![preferred];
+
+    if let Some(secondary) = get_secondary_codex_auth_path() {
+        paths.push(secondary);
+    }
+
+    Ok(paths)
+}
+
+fn get_codex_auth_source_platform(path: &PathBuf) -> String {
+    let path_str = path.to_string_lossy();
+    if path_str.starts_with(r"\\wsl$\") {
+        "wsl".to_string()
+    } else {
+        "windows".to_string()
+    }
+}
+
+fn get_candidate_codex_sessions_dirs() -> Result<Vec<PathBuf>, String> {
+    let preferred = get_effective_codex_home_dir()?.join("sessions");
+    let mut dirs = vec![preferred];
+
+    let primary = get_primary_codex_home_dir()?.join("sessions");
+    if !dirs.iter().any(|dir| dir == &primary) {
+        dirs.push(primary);
+    }
+
+    Ok(dirs)
 }
 
 /// 获取accounts.json路径
@@ -36,9 +140,7 @@ fn get_accounts_store_path() -> Result<PathBuf, String> {
 
 /// 获取.codex/auth.json路径
 fn get_codex_auth_path() -> Result<PathBuf, String> {
-    dirs::home_dir()
-        .map(|p| p.join(".codex").join("auth.json"))
-        .ok_or_else(|| "Cannot find home directory".to_string())
+    get_effective_codex_home_dir().map(|p| p.join("auth.json"))
 }
 
 /// 获取账号 auth 存储目录
@@ -76,26 +178,60 @@ fn save_accounts_store(data: String) -> Result<(), String> {
 /// 写入Codex auth.json
 #[tauri::command]
 fn write_codex_auth(auth_config: String) -> Result<(), String> {
-    let path = get_codex_auth_path()?;
-    
-    // 确保.codex目录存在
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let paths = get_candidate_codex_auth_paths()?;
+
+    for path in paths {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+
+        fs::write(&path, &auth_config).map_err(|e| e.to_string())?;
     }
-    
-    fs::write(&path, auth_config).map_err(|e| e.to_string())
+
+    Ok(())
 }
 
 /// 读取当前Codex auth.json
 #[tauri::command]
 fn read_codex_auth() -> Result<String, String> {
-    let path = get_codex_auth_path()?;
-    
-    if !path.exists() {
+    for path in get_candidate_codex_auth_paths()? {
+        if path.exists() {
+            return fs::read_to_string(&path).map_err(|e| e.to_string());
+        }
+    }
+
+    Err("Codex auth.json not found".to_string())
+}
+
+#[tauri::command]
+fn read_all_codex_auths() -> Result<Vec<CodexAuthSource>, String> {
+    let mut sources = Vec::new();
+
+    for path in get_candidate_codex_auth_paths()? {
+        if !path.exists() {
+            continue;
+        }
+
+        let auth_json = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        if sources
+            .iter()
+            .any(|source: &CodexAuthSource| source.auth_json == auth_json)
+        {
+            continue;
+        }
+
+        sources.push(CodexAuthSource {
+            path: path.to_string_lossy().to_string(),
+            platform: get_codex_auth_source_platform(&path),
+            auth_json,
+        });
+    }
+
+    if sources.is_empty() {
         return Err("Codex auth.json not found".to_string());
     }
-    
-    fs::read_to_string(&path).map_err(|e| e.to_string())
+
+    Ok(sources)
 }
 
 /// 保存指定账号 auth
@@ -146,9 +282,8 @@ fn write_file_content(file_path: String, content: String) -> Result<(), String> 
 /// 获取用户主目录
 #[tauri::command]
 fn get_home_dir() -> Result<String, String> {
-    dirs::home_dir()
+    get_effective_home_dir()
         .map(|p| p.to_string_lossy().to_string())
-        .ok_or_else(|| "Cannot find home directory".to_string())
 }
 
 /// 获取用量绑定映射路径
@@ -257,6 +392,14 @@ struct AuthConfig {
     tokens: Option<AuthTokens>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexAuthSource {
+    path: String,
+    platform: String,
+    auth_json: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct WhamAccountsCheckResponse {
     accounts: Vec<WhamAccountEntry>,
@@ -350,11 +493,7 @@ async fn fetch_wham_account_metadata(
 }
 
 fn get_current_auth_account_id() -> Result<String, String> {
-    let path = get_codex_auth_path()?;
-    if !path.exists() {
-        return Err("Codex auth.json not found".to_string());
-    }
-    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let content = read_codex_auth()?;
     let auth: AuthConfig = serde_json::from_str(&content).map_err(|e| e.to_string())?;
     auth.tokens
         .and_then(|t| t.account_id)
@@ -420,8 +559,14 @@ pub struct UsageResult {
 
 /// 获取 codex sessions 目录路径
 fn get_codex_sessions_dir() -> Result<PathBuf, String> {
-    dirs::home_dir()
-        .map(|p| p.join(".codex").join("sessions"))
+    let dirs = get_candidate_codex_sessions_dirs()?;
+
+    if let Some(existing) = dirs.iter().find(|dir| dir.exists()) {
+        return Ok(existing.clone());
+    }
+
+    dirs.into_iter()
+        .next()
         .ok_or_else(|| "Cannot find home directory".to_string())
 }
 
@@ -1288,6 +1433,7 @@ pub fn run() {
             save_accounts_store,
             write_codex_auth,
             read_codex_auth,
+            read_all_codex_auths,
             save_account_auth,
             read_account_auth,
             delete_account_auth,
