@@ -92,14 +92,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <button
                 type="button"
                 onClick={() => setProxyEnabled(!proxyEnabled)}
-                className={`relative h-8 w-14 rounded-full transition-colors ${
-                  proxyEnabled ? 'bg-emerald-500' : 'bg-slate-200'
-                }`}
+                className={`relative h-8 w-14 rounded-full transition-colors ${proxyEnabled ? 'bg-emerald-500' : 'bg-slate-200'
+                  }`}
               >
                 <span
-                  className={`absolute top-1 left-1 h-6 w-6 bg-white rounded-full shadow transition-transform ${
-                    proxyEnabled ? 'translate-x-6' : 'translate-x-0'
-                  }`}
+                  className={`absolute top-1 left-1 h-6 w-6 bg-white rounded-full shadow transition-transform ${proxyEnabled ? 'translate-x-6' : 'translate-x-0'
+                    }`}
                 />
               </button>
             </div>
@@ -124,7 +122,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <div className="pt-4 border-t border-slate-200">
             <h3 className="text-[var(--dash-text-secondary)] text-xs font-medium mb-2">关于</h3>
             <div className="space-y-1 text-sm text-[var(--dash-text-secondary)]">
-              <p>Codex Manager v0.1.4</p>
+              <p>Codex Manager v0.1.5</p>
               <p className="text-xs text-[var(--dash-text-muted)]">
                 管理多个 OpenAI Codex 账号的桌面工具
               </p>
